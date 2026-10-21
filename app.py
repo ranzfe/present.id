@@ -6,18 +6,20 @@ import json
 import io
 import openai
 
-# --- CONFIGURATION & PAGE SETUP ---
 st.set_page_config(page_title="present.id - AI Presentation Generator", page_icon="📊", layout="wide")
 
 st.title("📊 present.id")
-st.subheader("Ubah Dokumen (PDF/Excel) Menjadi Presentasi PPTX dalam Sekejap")
+st.caption("Ubah Dokumen (PDF/Excel) Menjadi Presentasi PPTX dalam Sekejap")
 
-# Sidebar untuk API Key
-with st.sidebar:
-    st.header("Pengaturan")
-    api_key = st.text_input("Masukkan OpenAI API Key:", type="password")
+# --- AMBIL API KEY DARI STREAMLIT SECRETS ---
+# Jika secrets belum diset, fallback ke input manual di sidebar
+api_key = st.secrets.get("OPENAI_API_KEY", "")
 
-# --- HELPER FUNCTIONS ---
+if not api_key:
+    with st.sidebar:
+        st.header("Pengaturan")
+        api_key = st.text_input("Masukkan OpenAI API Key:", type="password")
+
 def extract_text_from_pdf(pdf_file):
     reader = PdfReader(pdf_file)
     text = ""
@@ -31,33 +33,37 @@ def extract_data_from_excel(excel_file):
     for sheet in xls.sheet_names:
         df = pd.read_excel(excel_file, sheet_name=sheet)
         summary_text += f"\n--- Sheet: {sheet} ---\n"
-        summary_text += df.head(10).to_string() # Mengambil sampel 10 baris pertama
+        summary_text += df.head(10).to_string()
     return summary_text
 
-def generate_slides_json(content, openai_api_key):
-    client = openai.OpenAI(api_key=openai_api_key)
+def generate_slides_json(content, key):
+    client = openai.OpenAI(api_key=key)
     
     prompt = f"""
-    Kamu adalah asisten profesional pembuat presentasi.
+    Kamu adalah pembuat presentasi profesional.
     Analisis dokumen/data berikut dan buatlah struktur presentasi 5-7 slide.
     
-    Kembalikan respons HANYA dalam format JSON dengan struktur seperti ini:
-    [
-        {{
-            "title": "Judul Slide 1",
-            "subtitle": "Subjudul atau deskripsi singkat",
-            "bullets": ["Poin 1", "Poin 2", "Poin 3"]
-        }}
-    ]
+    Format output HANYA JSON bertipe object dengan key 'slides':
+    {{
+        "slides": [
+            {{
+                "title": "Judul Slide 1",
+                "subtitle": "Ringkasan singkat",
+                "bullets": ["Poin 1", "Poin 2", "Poin 3"]
+            }}
+        ]
+    }}
 
     Dokumen/Data:
-    {content[:4000]}  # Mencegah over-token
+    {content[:4000]}
     """
     
     response = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role": "system", "content": "You output JSON only."},
-                  {"role": "user", "content": prompt}],
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant that outputs JSON."},
+            {"role": "user", "content": prompt}
+        ],
         response_format={"type": "json_object"}
     )
     
@@ -66,15 +72,14 @@ def generate_slides_json(content, openai_api_key):
 def create_pptx(slides_data):
     prs = Presentation()
     
-    for slide_info in slides_data.get("slides", slides_data if isinstance(slides_data, list) else []):
-        slide_layout = prs.slide_layouts[1] # Layout Title & Content
+    slides_list = slides_data.get("slides", []) if isinstance(slides_data, dict) else slides_data
+    
+    for slide_info in slides_list:
+        slide_layout = prs.slide_layouts[1]
         slide = prs.slides.add_slide(slide_layout)
         
-        # Set Title
-        title = slide.shapes.title
-        title.text = slide_info.get("title", "")
+        slide.shapes.title.text = slide_info.get("title", "Slide Tanpa Judul")
         
-        # Set Content (Subtitle & Bullets)
         tf = slide.placeholders[1].text_frame
         tf.text = slide_info.get("subtitle", "")
         
@@ -83,40 +88,34 @@ def create_pptx(slides_data):
             p.text = bullet
             p.level = 1
             
-    # Save to buffer
     pptx_io = io.BytesIO()
     prs.save(pptx_io)
     pptx_io.seek(0)
     return pptx_io
 
-# --- MAIN APP LOGIC ---
-uploaded_file = st.file_uploader("Upload file PDF atau Excel kamu di sini", type=["pdf", "xlsx", "xls"])
+# UI Utama
+uploaded_file = st.file_uploader("Upload file PDF atau Excel (.xlsx)", type=["pdf", "xlsx", "xls"])
 
 if uploaded_file and api_key:
-    if st.button("🚀 Buat Presentasi"):
-        with st.spinner("Menganalisis dokumen dan menggenerate slide..."):
-            extracted_text = ""
-            
-            # 1. Ekstraksi Dokumen
-            if uploaded_file.name.endswith('.pdf'):
-                extracted_text = extract_text_from_pdf(uploaded_file)
-            elif uploaded_file.name.endswith(('.xlsx', '.xls')):
-                extracted_text = extract_data_from_excel(uploaded_file)
+    if st.button("🚀 Buat Presentasi Now"):
+        with st.spinner("AI sedang membaca dokumen dan mengolah slide..."):
+            try:
+                if uploaded_file.name.endswith('.pdf'):
+                    extracted_text = extract_text_from_pdf(uploaded_file)
+                else:
+                    extracted_text = extract_data_from_excel(uploaded_file)
+                    
+                slides_data = generate_slides_json(extracted_text, api_key)
+                pptx_file = create_pptx(slides_data)
                 
-            # 2. Olah dengan AI
-            slides_data = generate_slides_json(extracted_text, api_key)
-            
-            # 3. Generate PPTX
-            pptx_file = create_pptx(slides_data)
-            
-            st.success("Presentasi berhasil dibuat!")
-            
-            # 4. Download Button
-            st.download_button(
-                label="📥 Download File PPTX",
-                data=pptx_file,
-                file_name=f"{uploaded_file.name.split('.')[0]}_presentation.pptx",
-                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-            )
+                st.success("Presentasi berhasil dibuat!")
+                st.download_button(
+                    label="📥 Download File PPTX",
+                    data=pptx_file,
+                    file_name=f"{uploaded_file.name.split('.')[0]}_present_id.pptx",
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                )
+            except Exception as e:
+                st.error(f"Terjadi kesalahan: {str(e)}")
 elif uploaded_file and not api_key:
-    st.warning("Silakan masukkan OpenAI API Key kamu di sidebar terlebih dahulu.")
+    st.warning("Silakan masukkan API Key di sidebar atau atur di Streamlit Secrets.")
