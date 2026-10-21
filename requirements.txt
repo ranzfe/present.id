@@ -1,6 +1,7 @@
-streamlit
+streamlit>=1.30.0
 pandas
 openpyxl
 pypdf
 python-pptx
 openai
+streamlit-option-menu
